@@ -8,7 +8,8 @@
 ## 문서
 
 - [`docs/event-plan.md`](docs/event-plan.md) — 이벤트 기획안 (컨셉, 타임라인, 뽑기 설계, 1박 2일 코스, 리스크)
-- [`docs/tech-spec.md`](docs/tech-spec.md) — 런처 기술 스펙 초안 (Electron, 상태 저장, 봉인 방식, 개발 순서)
+- [`docs/mechanics.md`](docs/mechanics.md) — 메커니즘 상세 (카드 조각 해제, 데일리 키, 뽑기 세리머니, 개봉 확장, 우선순위)
+- [`docs/tech-spec.md`](docs/tech-spec.md) — 런처 기술 스펙 초안 (Electron, 상태 스키마, 봉인·해시, 렌더링, 개발 순서)
 
 ## 현재 상태
 
