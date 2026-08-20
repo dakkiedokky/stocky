@@ -1,0 +1,5 @@
+node_modules/
+*.pdf
+kfont.bin
+latin.ttf
+tray.png
