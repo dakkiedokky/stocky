@@ -2,6 +2,86 @@
 
 > `docs/event-plan.md`의 이벤트를 윈도우 PC에서 구동하기 위한 구현 초안입니다.
 > 아직 코드는 없습니다. 착수 시점에 이 문서를 기준으로 시작합니다.
+> **§0에 실제 스파이크 결과가 있습니다** — 스택은 검증됐고, 한 군데를 바꿨습니다.
+
+---
+
+## 0. 실현 가능성 — 실제로 돌려본 결과
+
+착수 전에 위험한 부분만 골라 스파이크를 돌렸습니다. **Electron 43.4.1 / Chromium 150 / Node 22**
+환경에서 실측한 결과입니다.
+
+| 항목 | 결과 | 비고 |
+|---|---|---|
+| Electron 부팅 + kiosk 전체화면 | ✅ | `isKiosk=true` 확인 |
+| `powerSaveBlocker` | ✅ | `prevent-display-sleep` 동작 |
+| `Tray` 상주 | ✅ | 아이콘 로드 + 툴팁 |
+| `Notification` | ✅ | **`setAppUserModelId()` 필수** — 아래 참조 |
+| 자동 실행 API | ✅ | `getLoginItemSettings` 조회 가능 |
+| AES-256-GCM 봉인 + PBKDF2 | ✅ | 변조 시 auth tag가 정확히 잡아냄 |
+| canonical JSON + SHA-256 커밋 | ✅ | 키 순서를 바꿔도 digest 동일 |
+| QR 오프라인 생성 | ✅ | `qrcode` — SVG 1.5KB / PNG dataURI |
+| 날짜 경계 05:00 KST | ✅ | 02:30 → 전날, 06:00 → 당일 |
+| 밀린 날 순차 재생 | ✅ | 5일 누락 시 5일 큐 생성 |
+| `blur(60px)` + 타일 54칸 합성 | ✅ | 630×882 기준 1.4초 (헤드리스·GPU 없이) |
+| **한글 PDF 증서 — `pdf-lib`** | ❌ | **실패. 아래 참조** |
+
+**결론: 스택은 그대로 갑니다.** 다만 PDF 생성 방식 하나를 바꿔야 합니다.
+
+### ⚠️ `pdf-lib`로는 한글 증서를 만들 수 없습니다
+
+나눔명조(14,694 glyph)를 `pdf-lib` + `@pdf-lib/fontkit`으로 임베드하면 실패합니다.
+
+```
+Error: Trying to access beyond buffer length
+```
+
+`subset` 옵션(true/false), `Buffer`/`Uint8Array` 전달 방식, `fontkit` 최신 버전 —
+**네 조합 모두 실패**했습니다. 같은 코드에 라틴 폰트(Inter, 2,871 glyph)를 넣으면
+정상 동작하므로 라이브러리 쪽 CJK 처리 한계입니다. 폰트 파일 자체는
+`loca` / `glyf` 테이블 정합성까지 확인했고 fontkit은 정상 파싱합니다.
+
+### ✅ 대신 Electron의 `printToPDF`를 씁니다
+
+```js
+await win.loadFile('cert.html');       // @font-face로 한글 폰트 로드
+const pdf = await win.webContents.printToPDF({
+  pageSize: 'A5', printBackground: true, margins: { marginType: 'none' }
+});
+```
+
+실측 결과 **A5 22.5KB, `AAAAAA+NanumMyeongjo` 서브셋이 정상 임베드**되고
+`ToUnicode` CMap도 생성되어 텍스트 복사·검색까지 됩니다.
+
+이게 오히려 더 나은 선택입니다.
+
+- **PDF 라이브러리 의존성이 사라집니다** — `pdf-lib`, `@pdf-lib/fontkit` 둘 다 제거
+- **증서를 HTML/CSS로 디자인합니다** — 앱의 나머지 화면과 같은 도구, 같은 토큰
+- **`@page { size: A5 }`로 인쇄 규격을 직접 제어**합니다
+
+디자인 PRD의 증서 규격([`design-prd.md`](design-prd.md) §7)도 이미지가 아니라
+HTML 시안으로 넘기면 그대로 쓸 수 있습니다.
+
+### ⚠️ Windows 토스트 알림에는 `setAppUserModelId`가 필수
+
+이걸 빼면 Windows 10/11에서 알림이 **조용히 안 뜹니다.** 에러도 안 납니다.
+앱 시작 지점, `app.whenReady()` 이전에 호출하세요.
+
+```js
+app.setAppUserModelId('com.dakkie.youngeun0919');
+```
+
+13일 설계 전체가 이 알림에 걸려 있으니([`mechanics.md`](mechanics.md) §5.3)
+**실제 Windows 기기에서 반드시 한 번 확인하세요.** 리눅스·맥에서는 재현되지 않습니다.
+
+### 아직 확인하지 못한 것
+
+- **Windows 실기 검증** — 위 결과는 리눅스 컨테이너 + xvfb 기준입니다.
+  토스트 알림, 트레이 우클릭 메뉴, 자동 실행 등록은 Windows에서 다시 봐야 합니다
+- **`portable .exe` 빌드** — 리눅스에서 Windows 타깃을 빌드하려면 wine이 필요합니다.
+  **윈도우 기기에서 빌드하는 쪽을 권합니다**
+- `capturePage()`는 헤드리스에서 `UnknownVizError`로 실패했습니다. GPU 없는 환경의 제약이고
+  실기에서는 문제되지 않지만, 이 앱은 화면 캡처를 쓰지 않으므로 무관합니다
 
 ---
 
@@ -36,7 +116,7 @@ Electron + Vite + React + TypeScript
 ├─ 애니메이션   Framer Motion (카드 뒤집기, 봉인 파괴)
 ├─ 스타일       Tailwind CSS
 ├─ 폰트         Pretendard (오프라인 번들 — CDN 금지)
-├─ 사운드       Howler.js (앰비언트, 개봉 SFX)
+├─ 사운드       Howler.js (앰비언트, 야바위 SFX, 개봉 SFX)
 └─ 패키징       electron-builder → portable .exe
 ```
 
@@ -104,8 +184,15 @@ Boot          타이틀. "YOUNGEUN · 0919"
   },
 
   "tiles": {                      // 카드별 해제된 타일 인덱스
-    "gift":   [0, 5, 8, 9, 17, 23],
-    "dining": [2, 3, 11, 14, 20, 27]
+    "gift":  [0, 5, 8, 9, 17, 23],
+    "hotel": [2, 3, 11, 14, 20, 27]
+  },
+
+  "draws": {                      // 슬롯별 뽑기 기록 — docs/draw-sequence.md §9
+    "gift":  { "pickedPos": 1, "eliminatedPos": 2, "switched": false,
+               "finalPos": 1, "confirmCount": 2 },
+    "hotel": { "pickedPos": 0, "eliminatedPos": 1, "switched": true,
+               "finalPos": 2, "confirmCount": 0 }
   },
 
   "tilesTotal": 28,               // 보장 게이지 표시값 (목표 40)
@@ -245,7 +332,7 @@ img            원본 이미지
 
 | 기능 | 구현 | 비고 |
 |---|---|---|
-| 봉인 증서 PDF | `pdf-lib` | A5 1장. 한글 폰트를 서브셋으로 임베드해야 깨지지 않습니다 |
+| 봉인 증서 PDF | **`webContents.printToPDF`** | HTML/CSS로 작성 후 A5 출력. `pdf-lib`는 한글에서 실패합니다 (§0) |
 | QR 코드 | `qrcode` | 오프라인 생성. 여정 웹 URL을 인코딩 |
 | 사운드 | Howler.js | 앰비언트는 루프, 효과음은 프리로드 |
 | 해시 | Node `crypto` | 렌더러가 아닌 메인 프로세스에서 |
@@ -293,7 +380,8 @@ img            원본 이미지
 `docs/mechanics.md` §10의 우선순위와 짝을 이룹니다.
 
 1. Electron + Vite 셸, kiosk 전체화면, 상태 파일 읽기/쓰기
-2. **주최자 모드 + 2단계 뽑기 + 봉인** — 여기까지가 D-14 1차 마감
+2. **주최자 모드 + 야바위 뽑기 시퀀스 + 봉인** — 여기까지가 D-14 1차 마감
+   ([`draw-sequence.md`](draw-sequence.md) 전체가 이 항목입니다. 분량이 가장 큽니다)
 3. 봉인 대기 화면 — 카운트다운, 타일 + 블러, 밀랍 온도
 4. 데일리 키 3종 + 밀린 날 순차 재생
 5. 데스크톱 알림 + 트레이 상주
@@ -314,7 +402,7 @@ img            원본 이미지
 | 시점 | 마일스톤 |
 |---|---|
 | D-24 (8/26) | 셸 + 상태 저장 + 해시 커밋 |
-| D-17 (9/2) | 주최자 모드 + 뽑기 세리머니 + 증서 PDF |
+| D-17 (9/2) | 주최자 모드 + 야바위 시퀀스 + 증서 printToPDF |
 | **D-14 (9/5)** | **뽑기 세리머니 — 1차 마감** |
 | D-12 (9/7) | 타일 + 블러 + 데일리 키 + 알림 — **D-13부터 매일 돌아야 하므로 실질 마감** |
 | D-7 (9/12) | 개봉 연출 완성 |
